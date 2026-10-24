@@ -1,0 +1,595 @@
+{
+ "name": "Buscador de trabajos — ofertas por correo",
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "minutes",
+       "minutesInterval": 15
+      }
+     ]
+    }
+   },
+   "name": "Cada 15 minutos",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    -2864,
+    -512
+   ]
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $('Config').first().json.correoOrigen }}",
+    "toEmail": "={{ $('Config').first().json.correoDestino }}",
+    "subject": "=🔔 [{{ $json.ofertas != null ? $json.ofertas + ' ofertas' : '?' }}] {{ $json.titulo.slice(0,60) }}",
+    "emailFormat": "text",
+    "text": "=Fuente: {{ $json.fuente }}\nTítulo: {{ $json.titulo }}\nPresupuesto: ${{ $json.presupuesto_monto || '?' }} USD ({{ $json.presupuesto_tipo }}){{ $json.presupuesto_monto_original && $json.presupuesto_moneda_original && $json.presupuesto_moneda_original !== 'USD' ? ' [originalmente ' + $json.presupuesto_monto_original + ' ' + $json.presupuesto_moneda_original + ']' : '' }}\nCompetencia: {{ $json.ofertas != null ? $json.ofertas + ' ofertas' : 'sin dato' }}{{ $json.oferta_promedio != null ? ', promedio ' + $json.oferta_promedio + ' ' + ($json.presupuesto_moneda_original || 'USD') : '' }}\n\n{{ ($json.descripcion || '').slice(0, 400) }}\n\nEnlace: {{ $json.url }}",
+    "options": {}
+   },
+   "name": "Correo (sin puntuación)",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    -1184,
+    -352
+   ]
+  },
+  {
+   "parameters": {
+    "fromEmail": "={{ $('Config').first().json.correoOrigen }}",
+    "toEmail": "={{ $('Config').first().json.correoDestino }}",
+    "subject": "=🎯 {{ $json.score }}/10 [{{ $json.linea }}] [{{ $json.ofertas != null ? $json.ofertas + ' ofertas' : '?' }}] {{ $json.titulo.slice(0,60) }}",
+    "emailFormat": "text",
+    "text": "=Fuente: {{ $json.fuente }}\nPuntuación: {{ $json.score }}/10 — Línea: {{ $json.linea }}\nTítulo: {{ $json.titulo }}\nPresupuesto: ${{ $json.presupuesto_monto || '?' }} USD ({{ $json.presupuesto_tipo }}){{ $json.presupuesto_monto_original && $json.presupuesto_moneda_original && $json.presupuesto_moneda_original !== 'USD' ? ' [originalmente ' + $json.presupuesto_monto_original + ' ' + $json.presupuesto_moneda_original + ']' : '' }}\nCompetencia: {{ $json.ofertas != null ? $json.ofertas + ' ofertas' : 'sin dato' }}{{ $json.oferta_promedio != null ? ', promedio ' + $json.oferta_promedio + ' ' + ($json.presupuesto_moneda_original || 'USD') : '' }}\nRazones: {{ ($json.razones || []).join(' · ') }}\n\nBORRADOR DE PROPUESTA:\n{{ $json.propuesta }}\n\nEnlace: {{ $json.url }}",
+    "options": {}
+   },
+   "name": "Correo (con puntuación)",
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    -560,
+    -624
+   ]
+  },
+  {
+   "parameters": {
+    "mode": "runOnceForEachItem",
+    "jsCode": "// Une la respuesta de Claude con la oferta original y filtra por score\nconst cfg = $('Config').first().json;\nconst original = $('Preparar scoring').item.json;\nlet ev = { score: 0, razones: [\"respuesta no parseable\"], linea: \"OTRO\", propuesta: \"\" };\ntry {\n  let raw = $json.content[0].text.trim().replace(/^```(json)?\\s*/,\"\").replace(/\\s*```$/,\"\");\n  ev = JSON.parse(raw);\n} catch (e) {}\nif ((ev.score || 0) < cfg.scoreMinimo) return null;  // descarta silenciosamente\nconst { payload, ...oferta } = original;\nreturn { json: { ...oferta, ...ev } };"
+   },
+   "name": "Parsear score",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -784,
+    -624
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://api.anthropic.com/v1/messages",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "anthropic-version",
+       "value": "2023-06-01"
+      },
+      {
+       "name": "content-type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.payload) }}",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "name": "Claude API",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -976,
+    -624
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "mode": "runOnceForEachItem",
+    "jsCode": "// Construye el payload para la API de Anthropic (un item por oferta)\nconst cfg = $('Config').first().json;\nconst j = $json;\nconst prompt = \"Eres mi filtro de oportunidades freelance. Mi perfil real y verificable: \" + cfg.perfil +\n  \"\\n\\nIMPORTANTE: en la propuesta NUNCA inventes nombres de clientes, cantidades de proyectos entregados, metricas de resultados, ni ningun detalle que no este escrito tal cual en mi perfil de arriba. Si ninguna credencial encaja perfecto, usa la mas cercana de mi perfil, sin agregar detalles inventados.\" +\n  \"\\n\\nEvalúa esta oferta y responde SOLO con JSON válido, sin bloques de código:\\n\" +\n  '{\"score\": 0-10, \"razones\": [\"max 3, concretas\"], \"linea\": \"DOCS|N8N|SISTEMA|FOOD|OTRO\", ' +\n  '\"propuesta\": \"borrador de propuesta de max 130 palabras en el idioma de la oferta: ' +\n  '(1) primera linea reflejando SU problema especifico, (2) solucion en 2-3 pasos con mi stack, ' +\n  '(3) UNA credencial real, tal cual esta en mi perfil arriba, sin inventar detalles adicionales, (4) pregunta especifica de cierre. Sin Dear sir, sin adulacion.\"}' +\n  \"\\n\\nOFERTA [\" + j.fuente + \"] \" + j.titulo +\n  \" | Presupuesto: $\" + (j.presupuesto_monto != null ? j.presupuesto_monto : \"?\") + \" USD (\" + j.presupuesto_tipo + \")\" +\n  (j.presupuesto_monto_original != null && j.presupuesto_moneda_original && j.presupuesto_moneda_original !== \"USD\" ? \" [originalmente \" + j.presupuesto_monto_original + \" \" + j.presupuesto_moneda_original + \"]\" : \"\") +\n  (j.ofertas != null ? \" | Competencia: \" + j.ofertas + \" ofertas ya recibidas\" + (j.oferta_promedio != null ? \" (promedio \" + j.oferta_promedio + \" \" + (j.presupuesto_moneda_original || \"USD\") + \")\" : \"\") : \"\") +\n  \"\\n\" + j.descripcion;\nreturn { json: { ...j, payload: {\n  model: cfg.anthropicModel,\n  max_tokens: 800,\n  messages: [{ role: \"user\", content: prompt }]\n}}};"
+   },
+   "name": "Preparar scoring",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -1184,
+    -624
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 1
+     },
+     "conditions": [
+      {
+       "leftValue": "={{ $('Config').first().json.anthropicApiKey }}",
+       "rightValue": "",
+       "operator": {
+        "type": "string",
+        "operation": "notEmpty",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "name": "¿Scoring con Claude?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    -1408,
+    -512
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Filtro duro + deduplicación persistente (solo en ejecuciones de producción)\nconst cfg = $('Config').first().json;\nconst staticData = $getWorkflowStaticData('global');\nstaticData.vistos = staticData.vistos || {};\n// Limpieza: conserva máximo 3000 ids para que no crezca sin límite\nconst keys = Object.keys(staticData.vistos);\nif (keys.length > 3000) { for (const k of keys.slice(0, keys.length - 3000)) delete staticData.vistos[k]; }\n\nconst out = [];\nfor (const item of items) {\n  const j = item.json;\n  const texto = ((j.titulo || \"\") + \" \" + (j.descripcion || \"\")).toLowerCase();\n  if (staticData.vistos[j.id]) continue;\n  if (!j.sinFiltroPalabras && !cfg.keywordsIncluir.some(k => texto.includes(k.toLowerCase()))) { staticData.vistos[j.id] = 1; continue; }\n  if (cfg.keywordsExcluir.some(k => texto.includes(k.toLowerCase()))) { staticData.vistos[j.id] = 1; continue; }\n  const m = j.presupuesto_monto;\n  if (m !== null && m !== undefined) {\n    const min = j.presupuesto_tipo === \"hora\" ? cfg.presupuestoMinimoHora : cfg.presupuestoMinimoFijo;\n    if (m < min) { staticData.vistos[j.id] = 1; continue; }\n  }\n  if (cfg.maxOfertas && j.ofertas != null && j.ofertas > cfg.maxOfertas) { staticData.vistos[j.id] = 1; continue; }\n  staticData.vistos[j.id] = 1;\n  out.push(item);\n}\nreturn out;"
+   },
+   "name": "Filtrar y deduplicar",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -1600,
+    -512
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Normaliza la respuesta de Freelancer.com API y convierte el presupuesto a USD\nconst out = [];\nconst res = items[0].json;\nconst projects = res.result && res.result.projects ? res.result.projects : [];\n\nconst tasasRespaldo = { USD: 1, INR: 83, PKR: 278, BDT: 110, PHP: 56, NGN: 1550, EUR: 0.92, GBP: 0.79, AUD: 1.52, CAD: 1.36, ZAR: 18.3, IDR: 15800 };\nlet tasas = tasasRespaldo;\ntry {\n  const tasasRes = await this.helpers.httpRequest({ url: \"https://open.er-api.com/v6/latest/USD\", json: true });\n  if (tasasRes && tasasRes.rates) tasas = tasasRes.rates;\n} catch (e) {}\n\nfor (const p of projects) {\n  const b = p.budget || {};\n  const monedaCodigo = (p.currency && (p.currency.code || p.currency.sign)) || \"USD\";\n  const montoOriginal = (b.minimum !== undefined && b.minimum !== null) ? b.minimum : null;\n  let montoUSD = montoOriginal;\n  let monedaTexto = monedaCodigo;\n  if (montoOriginal !== null && monedaCodigo !== \"USD\") {\n    const tasa = tasas[monedaCodigo];\n    if (tasa) {\n      montoUSD = Math.round((montoOriginal / tasa) * 100) / 100;\n    } else {\n      monedaTexto = monedaCodigo + \" (no reconocida, sin convertir)\";\n    }\n  }\n  out.push({ json: {\n    id: \"freelancer_\" + p.id,\n    fuente: \"Freelancer\",\n    titulo: p.title || \"\",\n    descripcion: (p.preview_description || p.description || \"\").slice(0, 1500),\n    presupuesto_tipo: (p.type === \"hourly\") ? \"hora\" : \"fijo\",\n    presupuesto_monto: montoUSD,\n    presupuesto_monto_original: montoOriginal,\n    presupuesto_moneda_original: monedaTexto,\n    url: \"https://www.freelancer.com/projects/\" + (p.seo_url || p.id),\n    fecha: p.time_submitted ? new Date(p.time_submitted * 1000).toISOString() : \"\",\n    ofertas: (p.bid_stats && p.bid_stats.bid_count != null) ? p.bid_stats.bid_count : null,\n    oferta_promedio: (p.bid_stats && p.bid_stats.bid_avg != null) ? Math.round(p.bid_stats.bid_avg) : null\n  }});\n}\nreturn out;"
+   },
+   "name": "Normalizar Freelancer",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -2000,
+    -352
+   ],
+   "alwaysOutputData": true,
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// Normaliza items de RemoteOK (cada item es una oferta; el primero es metadata legal)\nconst out = [];\nfor (const item of items) {\n  const j = item.json;\n  if (!j || !j.position) continue;\n  const tags = (j.tags || []).join(\" \").toLowerCase();\n  out.push({ json: {\n    id: \"remoteok_\" + j.id,\n    fuente: \"RemoteOK\",\n    titulo: j.position + \" @ \" + (j.company || \"?\"),\n    descripcion: ((j.description || \"\").replace(/<[^>]+>/g, \" \").slice(0, 1500)) + \" | tags: \" + tags,\n    presupuesto_tipo: \"hora\",\n    presupuesto_monto: j.salary_min ? Math.round(j.salary_min / 2080) : null,\n    url: j.url || (\"https://remoteok.com/l/\" + j.id),\n    fecha: j.date || \"\"\n  }});\n}\nreturn out;"
+   },
+   "name": "Normalizar RemoteOK",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -2224,
+    -672
+   ],
+   "alwaysOutputData": true,
+   "disabled": true,
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "url": "https://www.freelancer.com/api/projects/0.1/projects/active/",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendQuery": true,
+    "queryParameters": {
+     "parameters": [
+      {
+       "name": "query",
+       "value": "={{ $('Config').first().json.freelancerQuery }}"
+      },
+      {
+       "name": "limit",
+       "value": "30"
+      },
+      {
+       "name": "full_description",
+       "value": "true"
+      },
+      {
+       "name": "bid_stats",
+       "value": "true"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "name": "Freelancer API",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -2224,
+    -352
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 1
+     },
+     "conditions": [
+      {
+       "leftValue": "={{ $('Config').first().json.freelancerToken }}",
+       "rightValue": "",
+       "operator": {
+        "type": "string",
+        "operation": "notEmpty",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "name": "¿Freelancer token?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    -2448,
+    -352
+   ]
+  },
+  {
+   "parameters": {
+    "url": "https://remoteok.com/api",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "name": "RemoteOK",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -2448,
+    -672
+   ],
+   "disabled": true,
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// ═══════ CONFIGURACIÓN — edita SOLO este nodo ═══════\nconst CONFIG = {\n  // Correo donde quieres recibir las ofertas encontradas\n  correoDestino: \"you@example.com\",\n  correoOrigen: \"you@example.com\",\n\n  // Claude API (opcional pero recomendado). Vacío = sin scoring, llegan todas las filtradas.\n  anthropicApiKey: \"EN_CREDENCIAL_N8N\", // la clave real vive en la credencial \"Anthropic - x-api-key\" del nodo Claude API; dejar este texto no vacío para activar el scoring\n  anthropicModel: \"claude-haiku-4-5\",\n  scoreMinimo: 7,\n\n  // Freelancer.com API (opcional). Token gratis en freelancer.com/api. Vacío = solo RemoteOK.\n  freelancerToken: \"EN_CREDENCIAL_N8N\", // el token real vive en la credencial \"Freelancer - oauth token\" del nodo Freelancer API; dejar este texto no vacío para activar la rama de Freelancer\n  freelancerQuery: \"n8n OR automation OR \\\"data extraction\\\" OR scraping OR \\\"api integration\\\"\",\n\n  // Filtro duro\n  keywordsIncluir: [\"n8n\",\"automation\",\"automatizacion\",\"automatización\",\"python\",\"scraping\",\n    \"api integration\",\"integración\",\"invoice\",\"factura\",\"pdf\",\"ocr\",\"extraction\",\"extracción\",\n    \"claude\",\"workflow\",\"make.com\",\"zapier\",\"inventory\",\"inventario\",\"winforms\",\"c#\",\n    \"recipe\",\"restaurant\",\"excel\",\"next.js\",\"nextjs\",\"react\",\"typescript\",\"react native\",\n    \"expo\",\"dashboard\",\"admin panel\",\"kyc\",\"identity verification\",\"marketplace\",\"full stack\"],\n  keywordsExcluir: [\"wordpress theme\",\"logo\",\"video edit\",\"academic\",\"homework\",\"game\",\n    \"blockchain token\",\"only $5\",\"data entry manual\"],\n  presupuestoMinimoFijo: 100,     // USD\n  presupuestoMinimoHora: 15,      // USD/h\n  maxOfertas: 100,                 // descartar publicaciones que ya tengan más ofertas que esto (solo Freelancer)\n\n  // Perfil para el scoring de Claude\n  perfil: \"Desarrollador de automatización: stack n8n autoalojado en producción (buscador de oportunidades con scoring por IA + evaluador anti-estafa de mensajes de Fiverr, ambos funcionando ahora mismo). \" +\n    \"Extracción de datos de documentos con IA: demo publicada en GitHub (invoice-extractor-demo) que usa la API de Claude para leer facturas/PDFs y exportarlos a datos estructurados. \" +\n    \"Desarrollo y mantengo Sistemagestion, un sistema de gestión (ERP) a medida en C#/.NET 8 con SQLite para una empresa de manufactura: producción diaria con control de materiales y desperdicio, bonos de producción, nómina con cumplimiento de la LOTTT venezolana y tasa USD/BCV, libros fiscales de IVA (SENIAT), cuentas por pagar, análisis de punto de equilibrio. \" +\n    \"Español nativo, inglés escrito. \" +\n    \"NO hago: diseño gráfico, temas WordPress, video, data entry manual.\"\n};\nreturn [{ json: CONFIG }];"
+   },
+   "name": "Config",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -2672,
+    -512
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": false,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 3
+     },
+     "conditions": [
+      {
+       "id": "ce082086-85b7-436f-9095-8c920c0c5e72",
+       "leftValue": "={{ $json.from }}",
+       "rightValue": "upwork.com",
+       "operator": {
+        "type": "string",
+        "operation": "contains"
+       }
+      },
+      {
+       "id": "7747d22f-caac-459c-9254-255c587b37bd",
+       "leftValue": "={{ $json.subject }}",
+       "rightValue": "New job alert",
+       "operator": {
+        "type": "string",
+        "operation": "contains"
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "name": "Filtrar remitente Upwork",
+   "type": "n8n-nodes-base.filter",
+   "typeVersion": 2.3,
+   "position": [
+    -2448,
+    -144
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "const out = [];\nfor (const item of items) {\n  const text = item.json.textPlain || item.json.text || \"\";\n  if (!text) continue;\n\n  const idMatch = text.match(/\\/jobs\\/~(\\d+)/);\n  if (!idMatch) continue;\n  const jobId = idMatch[1];\n  const url = `https://www.upwork.com/jobs/~${jobId}`;\n\n  let titulo = (item.json.subject || \"\").replace(/^New job alert:\\s*/i, \"\").trim();\n  if (!titulo) {\n    const titleMatch = text.match(/\\n\\n([^\\n]+?):\\s*https:\\/\\/www\\.upwork\\.com\\/jobs\\/~\\d+\\?link=title/);\n    titulo = titleMatch ? titleMatch[1].trim() : \"\";\n  }\n  titulo = titulo.replace(/\\.\\.\\.$/, \"\").trim();\n\n  const budgetMatch = text.match(/(Fixed|Hourly):\\s*\\$([\\d.,]+)(?:\\s*[-\\u2013]\\s*\\$?([\\d.,]+))?/i);\n  let presupuesto_tipo = \"fijo\";\n  let presupuesto_monto = null;\n  if (budgetMatch) {\n    presupuesto_tipo = /hourly/i.test(budgetMatch[1]) ? \"hora\" : \"fijo\";\n    const low = parseFloat(budgetMatch[2].replace(/,/g, \"\"));\n    const high = budgetMatch[3] ? parseFloat(budgetMatch[3].replace(/,/g, \"\")) : null;\n    presupuesto_monto = high ? (low + high) / 2 : low;\n  }\n\n  let descripcion = \"\";\n  const descMatch = text.match(/Posted[^\\n]*\\n\\n([\\s\\S]+?)\\s*(?:\\.\\.\\. more:|more:)/);\n  if (descMatch) descripcion = descMatch[1].replace(/\\s+/g, \" \").trim();\n  const clientMatch = text.match(/(Payment verified[^\\n]*)\\n/);\n  if (clientMatch) descripcion += \" | Cliente: \" + clientMatch[1].trim();\n\n  if (!titulo || presupuesto_monto === null) continue;\n\n  out.push({\n    json: {\n      id: \"upwork-\" + jobId,\n      fuente: \"Upwork\",\n      titulo,\n      descripcion,\n      presupuesto_tipo,\n      presupuesto_monto,\n      url,\n      fecha: new Date().toISOString().slice(0, 10)\n    }\n  });\n}\nreturn out;"
+   },
+   "name": "Normalizar Upwork",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -2224,
+    -144
+   ]
+  },
+  {
+   "parameters": {
+    "inputSource": "passthrough"
+   },
+   "name": "Alerta Upwork (desde flujo Fiverr)",
+   "type": "n8n-nodes-base.executeWorkflowTrigger",
+   "typeVersion": 1.1,
+   "position": [
+    -2672,
+    -144
+   ]
+  },
+  {
+   "parameters": {
+    "url": "https://workremoto.com/wp-json/wp/v2/empleo",
+    "sendQuery": true,
+    "queryParameters": {
+     "parameters": [
+      {
+       "name": "categoria_empleo",
+       "value": "1176"
+      },
+      {
+       "name": "per_page",
+       "value": "20"
+      },
+      {
+       "name": "orderby",
+       "value": "date"
+      },
+      {
+       "name": "order",
+       "value": "desc"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "name": "Work Remoto API",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -2224,
+    -800
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// Normaliza las vacantes de Work Remoto (WordPress REST, tipo \"empleo\", categoría Desarrollo)\n// Son EMPLEOS en relación de dependencia, no proyectos freelance: se marcan para que el filtro\n// de palabras clave no las descarte y para que Claude las evalúe como vacante de empleo.\nconst limpiar = (s) => String(s || \"\")\n  .replace(/<br\\s*\\/?>/gi, \"\\n\").replace(/<\\/(p|li|h\\d|div)>/gi, \"\\n\")\n  .replace(/<[^>]+>/g, \" \")\n  .replace(/&nbsp;/g, \" \").replace(/&amp;/g, \"&\").replace(/&#8211;/g, \"–\").replace(/&#8217;/g, \"'\")\n  .replace(/&quot;/g, '\"').replace(/&lt;/g, \"<\").replace(/&gt;/g, \">\")\n  .replace(/[ \\t]+/g, \" \").replace(/\\n\\s*\\n+/g, \"\\n\").trim();\n\nconst out = [];\nfor (const item of items) {\n  const e = item.json;\n  if (!e || !e.id) continue;\n  const m = e.meta || {};\n  const titulo = limpiar(e.title && e.title.rendered).replace(/\\s*[–-]\\s*Remoto\\s*$/i, \"\").trim();\n  const cuerpo = limpiar(e.content && e.content.rendered).slice(0, 1500);\n  const salMin = parseFloat(m._empleo_salario_min) || 0;\n  const salMax = parseFloat(m._empleo_salario_max) || 0;\n  const moneda = m._empleo_moneda || \"USD\";\n  const pais = m._empleo_pais || \"no indicado\";\n  const cabecera =\n    \"[VACANTE DE EMPLEO REMOTO en relación de dependencia. SÍ me interesa el empleo remoto fijo: NO restes puntos \" +\n    \"por no ser freelance ni por ser tiempo completo. Puntúa solo por encaje técnico con mi perfil, condiciones y \" +\n    \"elegibilidad de país. Resido en Venezuela: si los países elegibles no incluyen Venezuela ni una mención general a \" +\n    \"Latinoamérica, puntúa 4 o menos y dilo en las razones. En \\\"propuesta\\\" escribe un mensaje breve de postulación.]\\n\" +\n    \"Empresa: \" + (m._empleo_empresa || \"no indicada\") + \"\\n\" +\n    \"Países elegibles: \" + pais + \"\\n\" +\n    \"Jornada: \" + (m._empleo_jornada || \"no indicada\") + \"\\n\" +\n    \"Salario publicado: \" + (salMin > 0 ? salMin + (salMax > salMin ? \" - \" + salMax : \"\") + \" \" + moneda : \"no indicado\") + \"\\n\" +\n    \"Vence: \" + (m._empleo_expira || \"no indicado\") + \"\\n\" +\n    \"Cómo postular: \" + (m._empleo_postular_url || \"ver enlace de la oferta\") + \"\\n\\n\";\n  out.push({ json: {\n    id: \"workremoto_\" + e.id,\n    fuente: \"Work Remoto (empleo)\",\n    titulo: titulo,\n    descripcion: cabecera + cuerpo,\n    presupuesto_tipo: \"mensual\",\n    presupuesto_monto: salMin > 0 ? salMin : null,\n    presupuesto_monto_original: salMin > 0 ? salMin : null,\n    presupuesto_moneda_original: moneda,\n    url: e.link,\n    url_postulacion: m._empleo_postular_url || \"\",\n    fecha: e.date_gmt ? e.date_gmt + \"Z\" : \"\",\n    ofertas: null,\n    oferta_promedio: null,\n    sinFiltroPalabras: true\n  }});\n}\nreturn out;"
+   },
+   "name": "Normalizar Work Remoto",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -2000,
+    -800
+   ]
+  }
+ ],
+ "connections": {
+  "Cada 15 minutos": {
+   "main": [
+    [
+     {
+      "node": "Config",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Parsear score": {
+   "main": [
+    [
+     {
+      "node": "Correo (con puntuación)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Claude API": {
+   "main": [
+    [
+     {
+      "node": "Parsear score",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Preparar scoring": {
+   "main": [
+    [
+     {
+      "node": "Claude API",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿Scoring con Claude?": {
+   "main": [
+    [
+     {
+      "node": "Preparar scoring",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Correo (sin puntuación)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Filtrar y deduplicar": {
+   "main": [
+    [
+     {
+      "node": "¿Scoring con Claude?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Normalizar Freelancer": {
+   "main": [
+    [
+     {
+      "node": "Filtrar y deduplicar",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Freelancer API": {
+   "main": [
+    [
+     {
+      "node": "Normalizar Freelancer",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿Freelancer token?": {
+   "main": [
+    [
+     {
+      "node": "Freelancer API",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Normalizar Freelancer",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Config": {
+   "main": [
+    [
+     {
+      "node": "¿Freelancer token?",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "Work Remoto API",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Filtrar remitente Upwork": {
+   "main": [
+    [
+     {
+      "node": "Normalizar Upwork",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Normalizar Upwork": {
+   "main": [
+    [
+     {
+      "node": "Filtrar y deduplicar",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Alerta Upwork (desde flujo Fiverr)": {
+   "main": [
+    [
+     {
+      "node": "Filtrar remitente Upwork",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Work Remoto API": {
+   "main": [
+    [
+     {
+      "node": "Normalizar Work Remoto",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Normalizar Work Remoto": {
+   "main": [
+    [
+     {
+      "node": "Filtrar y deduplicar",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}

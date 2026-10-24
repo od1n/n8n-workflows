@@ -1,0 +1,322 @@
+{
+ "name": "Fiverr - Evaluador de mensajes",
+ "nodes": [
+  {
+   "parameters": {
+    "fromEmail": "you@example.com",
+    "toEmail": "you@example.com",
+    "subject": "=[Fiverr] Evaluacion de mensaje: {{ $json.veredicto}}",
+    "html": "=<h2>Evaluacion de mensaje de Fiverr</h2><p><strong>Veredicto:</strong> {{$json.veredicto}} (confianza: {{$json.confianza}}%)</p><p><strong>Remitente:</strong> {{$json.remitente}}</p><p><strong>Asunto original:</strong> {{$json.asuntoOriginal}}</p><p><strong>Razones:</strong> {{$json.razones}}</p><p><strong>Recomendacion:</strong> {{$json.recomendacion}}</p><hr><p><strong>Mensaje original:</strong></p><p>{{$json.textoOriginal}}</p>",
+    "options": {}
+   },
+   "type": "n8n-nodes-base.emailSend",
+   "typeVersion": 2.1,
+   "position": [
+    992,
+    -64
+   ],
+   "name": "Enviar veredicto por correo"
+  },
+  {
+   "parameters": {
+    "jsCode": "const item = $input.first().json;\n\nlet raw = '';\nif (typeof item === 'string') raw = item;\nelse if (item.content && Array.isArray(item.content) && item.content[0] && item.content[0].text) raw = item.content[0].text;\nelse if (item.text) raw = item.text;\nelse if (item.message && item.message.content && item.message.content[0] && item.message.content[0].text) raw = item.message.content[0].text;\nelse raw = JSON.stringify(item);\n\nraw = raw.trim().replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```\\s*$/i, '');\n\nlet parsed;\ntry {\n    parsed = JSON.parse(raw);\n} catch (e) {\n    parsed = {\n          veredicto: 'error_parseo',\n          confianza: 0,\n          razones: 'No se pudo interpretar la respuesta de Claude: ' + raw.slice(0, 300),\n          recomendacion: 'Revisar el mensaje manualmente.'\n    };\n}\n\nconst original = $('Filtrar remitente Fiverr').first().json;\n\nreturn [{\n    json: {\n          veredicto: parsed.veredicto,\n          confianza: parsed.confianza,\n          razones: parsed.razones,\n          recomendacion: parsed.recomendacion,\n          asuntoOriginal: original.subject || '',\n          remitente: original.from || '',\n          textoOriginal: original.text || original.textPlain || '',\n          fecha: original.date || ''\n    }\n}];"
+   },
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    576,
+    -64
+   ],
+   "name": "Parsear evaluacion"
+  },
+  {
+   "parameters": {
+    "modelId": {
+     "__rl": true,
+     "value": "claude-haiku-4-5-20251001",
+     "mode": "list",
+     "cachedResultName": "claude-haiku-4-5-20251001"
+    },
+    "messages": {
+     "values": [
+      {
+       "content": "=Sos un asistente que ayuda a un freelancer venezolano en Fiverr a detectar mensajes de compradores potencialmente fraudulentos.\n\nAnaliza el siguiente mensaje (llegado por notificacion de correo de Fiverr) y evalua que tan probable es que sea un mensaje LEGITIMO de un comprador real, versus un intento de estafa/phishing.\n\nSenales tipicas de estafa en Fiverr: pedir revisar/aprobar un \"documento\" antes de que exista un pedido pago, enlaces externos (Google Docs, Drive, etc.) fuera de Fiverr, lenguaje de urgencia falsa, pedir mover la conversacion fuera de la plataforma, ofertas de pago fuera de Fiverr, mensajes genericos sin detalles reales del proyecto.\n\nAsunto del correo: {{$json.subject}}\nContenido: {{$json.textPlain}}\n\nResponde EXCLUSIVAMENTE con un JSON valido, sin texto adicional ni markdown, con este formato exacto:\n{\"veredicto\": \"probable_real\" o \"sospechoso\" o \"probable_estafa\", \"confianza\": numero de 0 a 100, \"razones\": \"explicacion breve en espanol, 2-3 frases\", \"recomendacion\": \"que deberia hacer el freelancer, en espanol, 1-2 frases\"}"
+      }
+     ]
+    },
+    "options": {}
+   },
+   "type": "@n8n/n8n-nodes-langchain.anthropic",
+   "typeVersion": 1,
+   "position": [
+    224,
+    -64
+   ],
+   "name": "Evaluar mensaje con Claude"
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 3
+     },
+     "conditions": [
+      {
+       "id": "17e5df03-2292-4898-b20c-7ea39a7b38dd",
+       "leftValue": "=={{ $json.from}}",
+       "rightValue": "fiverr",
+       "operator": {
+        "type": "string",
+        "operation": "contains"
+       }
+      },
+      {
+       "id": "81cc5bf3-291c-47cd-af65-c48a561f004a",
+       "leftValue": "={{ $json.from }}",
+       "rightValue": "announce.",
+       "operator": {
+        "type": "string",
+        "operation": "notContains"
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "type": "n8n-nodes-base.filter",
+   "typeVersion": 2.3,
+   "position": [
+    16,
+    -64
+   ],
+   "name": "Filtrar remitente Fiverr"
+  },
+  {
+   "parameters": {
+    "options": {}
+   },
+   "type": "n8n-nodes-base.emailReadImap",
+   "typeVersion": 2.1,
+   "position": [
+    -144,
+    -144
+   ],
+   "name": "Email Trigger (IMAP)"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://YOUR-EVOLUTION-API-HOST/message/sendText/YOUR-INSTANCE",
+    "authentication": "genericCredentialType",
+    "genericAuthType": "httpHeaderAuth",
+    "sendBody": true,
+    "bodyParameters": {
+     "parameters": [
+      {
+       "name": "number",
+       "value": "YOUR_WHATSAPP_NUMBER"
+      },
+      {
+       "name": "text",
+       "value": "Fiverr - mensaje de posible cliente\n\nRemitente: {{ $json.remitente }}\nAsunto: {{ $json.asuntoOriginal }}\nVeredicto: {{ $json.veredicto }} ({{ $json.confianza }}% confianza)\n\n{{ $json.razones }}\n\nRevisa Fiverr para responder."
+      }
+     ]
+    },
+    "options": {}
+   },
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.4,
+   "position": [
+    672,
+    208
+   ],
+   "name": "Enviar WhatsApp - Fiverr"
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 3
+     },
+     "conditions": [
+      {
+       "id": "804185fd-8b8a-479d-9f5e-c11c74e1e7c7",
+       "leftValue": "{{ $json.veredicto }}",
+       "rightValue": "probable_real",
+       "operator": {
+        "type": "string",
+        "operation": "equals",
+        "name": "filter.operator.equals"
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "type": "n8n-nodes-base.filter",
+   "typeVersion": 2.3,
+   "position": [
+    784,
+    -64
+   ],
+   "name": "Solo cliente real (para WhatsApp)"
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": false,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "u1",
+       "leftValue": "={{ $json.from }}",
+       "rightValue": "upwork.com",
+       "operator": {
+        "type": "string",
+        "operation": "contains"
+       }
+      },
+      {
+       "id": "u2",
+       "leftValue": "={{ $json.subject }}",
+       "rightValue": "New job alert",
+       "operator": {
+        "type": "string",
+        "operation": "contains"
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "name": "¿Alerta de Upwork?",
+   "type": "n8n-nodes-base.filter",
+   "typeVersion": 2.3,
+   "position": [
+    80,
+    80
+   ]
+  },
+  {
+   "parameters": {
+    "workflowId": {
+     "__rl": true,
+     "value": "REPLACE_WITH_JOB_FINDER_WORKFLOW_ID",
+     "mode": "list",
+     "cachedResultName": "Buscador de trabajos — ofertas por correo"
+    },
+    "workflowInputs": {
+     "mappingMode": "passThrough",
+     "value": {},
+     "matchingColumns": [],
+     "schema": []
+    },
+    "mode": "each",
+    "options": {
+     "waitForSubWorkflow": false
+    }
+   },
+   "name": "Pasar alerta al buscador",
+   "type": "n8n-nodes-base.executeWorkflow",
+   "typeVersion": 1.2,
+   "position": [
+    320,
+    80
+   ]
+  }
+ ],
+ "connections": {
+  "Parsear evaluacion": {
+   "main": [
+    [
+     {
+      "node": "Enviar veredicto por correo",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "Solo cliente real (para WhatsApp)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Evaluar mensaje con Claude": {
+   "main": [
+    [
+     {
+      "node": "Parsear evaluacion",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Filtrar remitente Fiverr": {
+   "main": [
+    [
+     {
+      "node": "Evaluar mensaje con Claude",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Email Trigger (IMAP)": {
+   "main": [
+    [
+     {
+      "node": "Filtrar remitente Fiverr",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "¿Alerta de Upwork?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Solo cliente real (para WhatsApp)": {
+   "main": [
+    [
+     {
+      "node": "Enviar WhatsApp - Fiverr",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "¿Alerta de Upwork?": {
+   "main": [
+    [
+     {
+      "node": "Pasar alerta al buscador",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}
